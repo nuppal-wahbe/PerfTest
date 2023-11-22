@@ -1,0 +1,115 @@
+name: Parse ADA Results
+
+on:
+  workflow_call:
+    inputs:
+      containerName:
+        type: string
+        required: true
+        default: 'adachecks'
+      applicationName:
+        type: string
+        required: true
+      storageAccountName:
+        type: string
+        required: true
+    
+    secrets:
+       AZ_STORAGE_KEY_RD:
+          required: true    
+    outputs:
+        total_count:
+            description: "The count of ADA findings"
+            value: ${{ jobs.parse-findings.outputs.total_count }}
+        high_severity_count:
+            description: "The count of high severity findings"
+            value: ${{ jobs.parse-findings.outputs.high_severity_count }}
+        medium_severity_count:
+            description: "The count of medium severity findings"
+            value: ${{ jobs.parse-findings.outputs.medium_severity_count }}
+        low_severity_count:
+            description: "The count of low severity findings"
+            value: ${{ jobs.parse-findings.outputs.low_severity_count }}
+
+jobs:
+  parse-findings:
+    runs-on: ubuntu-latest
+    outputs:
+      total_count: ${{ steps.parse.outputs.total_count }}
+      high_severity_count: ${{ steps.parse.outputs.high_severity_count}}
+      medium_severity_count: ${{ steps.parse.outputs.medium_severity_count }}
+      low_severity_count: ${{ steps.parse.outputs.low_severity_count }}
+   
+
+    steps:
+      - name: Download ADA artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: ADAFindings
+
+        # Assuming that's the initial file name
+      - name: Parse ADAfindings.json
+        id: parse
+        shell: python
+        run: |
+          '''
+          This script will parse the Continuum ADA results and set several GitHub outputs that will be used for gating purposes
+          '''
+          
+          import json
+          import os
+          
+          # Open the concerns.json file
+          with open('concerns.json') as f:
+              data = json.load(f)
+          
+          
+          # Iterate through the json array and check each concern for a failure of 7 or higher. If found, increment the count of high severity concerns
+          total_count = 0
+          high_severity_count = 0
+          medium_severity_count = 0
+          low_severity_count = 0
+          for concern in data:
+              total_count += 1
+              if concern['Severity'] >= 7:
+                  high_severity_count += 1
+              elif concern['Severity'] >= 4 and concern['Severity'] < 7:
+                  medium_severity_count += 1
+              elif concern['Severity'] >= 1 and concern['Severity'] < 4:
+                  low_severity_count += 1
+          
+          # Print the number of high severity concerns to the console for debugging purposes
+          print("Total: " + str(total_count))
+          print("High Severity Concerns: " + str(high_severity_count))
+          print("Medium Severity Concerns: " + str(medium_severity_count))
+          print("Low Severity Concerns: " + str(low_severity_count))
+          
+          # Set the counts as  GitHub Outputs
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+            print(f"total_count= {str(total_count)}", file = f)
+            f.close()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              print( f"high_severity_count= {str(high_severity_count)}", file = f)
+              f.close()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              print(f"medium_severity_count= {str(medium_severity_count)}", file =f)
+              f.close()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              print(f"low_severity_count= {str(low_severity_count)}", file = f)
+              f.close()
+
+      - name: Generate Timestamp
+        id: date
+        run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
+
+        # Upload the results to Azure Storage Account
+      - name: Upload findings.json to azure blob storage
+        run: |
+          mv  ./concerns.json   ./${{inputs.applicationName}}_ADAfindings_${{ steps.date.outputs.date }}.json 
+          az storage blob upload --account-name ${{ inputs.storageAccountName }} --account-key ${{ secrets.AZ_STORAGE_KEY_RD }} --container-name ${{ inputs.containerName }} --file ./${{ inputs.applicationName }}_ADAfindings_${{ steps.date.outputs.date }}.json --overwrite=true
+
+      - name: upload blob storage for Gating
+        run: |
+         mv  ./${{inputs.applicationName}}_ADAfindings_${{ steps.date.outputs.date }}.json   ./${{inputs.applicationName}}_ADAfindings.json
+         az storage blob upload --account-name jamspacetest --account-key ${{ secrets.AZ_STORAGE_KEY_RD }} --container-name adachecks --file ${{inputs.applicationName}}_ADAfindings.json --overwrite=true
+          

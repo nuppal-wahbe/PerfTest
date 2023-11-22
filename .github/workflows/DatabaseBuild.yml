@@ -1,0 +1,38 @@
+name: DatabaseBuild
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      DacpacVersionNumber:
+        required: true
+        type: string
+      GithubRunnerGroupName:
+        default: 'windows-latest'
+        required: false
+        type: string
+      
+    secrets:
+      STOR_ACCT_KEY:
+        required: false
+        
+jobs:
+  build:
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+
+    steps:
+    - name: get all files from the repository
+      uses: actions/checkout@v2
+      
+    # locate the msbuild.exe, and add that to the PATH, so that it can be invoked without specifying the path
+    - name: locate msbuild.exe
+      uses: microsoft/setup-msbuild@v1.1
+
+    # create the DACPAC file using msbuild.exe
+    - name: create DACPAC file
+      run: msbuild.exe ./${{ vars.DB_PROJECT_NAME }}.sqlproj /p:Configuration=Release
+    
+    # upload the DACPAC file to BLOB storage
+    - name: upload DACPAC to Blob storage
+      run: |
+        az storage blob upload --file ./bin/Release/${{ vars.DB_PROJECT_NAME }}.dacpac -c ${{ vars.STOR_ACCT_CONTAINER }} -n ${{ vars.DB_PROJECT_NAME }}-v${{ inputs.DacpacVersionNumber }}.dacpac --account-name ${{ vars.STOR_ACCT_NAME }} --account-key ${{ secrets.STOR_ACCT_KEY }} --overwrite true --type block --tier Cool

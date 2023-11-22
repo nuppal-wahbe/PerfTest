@@ -1,0 +1,73 @@
+name: ReactDeploy
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      GithubRunnerGroupName:
+        default: 'ubuntu-latest'
+        required: false
+        type: string
+      EnvVariables:
+        default: ''
+        required: true
+        type: string
+      SkipDeleteStep:
+        default: false
+        required: false
+        type: boolean        
+      ImageName:
+        required: true
+        type: string
+      Environment:
+        required: true
+        type: string        
+    secrets:
+      OPENSHIFT_SERVER_URL:
+        required: true
+      OPENSHIFT_TOKEN:
+        required: true
+
+jobs:
+  deploy:
+    environment: ${{ inputs.Environment }}
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+
+    steps:
+    # Login to OpenShift
+    - name: Login to OpenShift
+      uses: redhat-actions/oc-login@v1
+      with:
+        openshift_server_url: ${{ secrets.OPENSHIFT_SERVER_URL }}
+        openshift_token: ${{ secrets.OPENSHIFT_TOKEN }}
+        insecure_skip_tls_verify: true
+        namespace: ${{ inputs.ImageName }}-${{ inputs.Environment }}
+
+    - id: wocgetver
+      run: |
+        oc version
+    - id: wocgetsecret
+      run: |
+        oc get secret acr-secret --namespace=${{ inputs.ImageName }}-${{ inputs.Environment }}
+    - id: wocsecret
+      run: |
+        oc secrets link default acr-secret --for=pull --namespace=${{ inputs.ImageName }}-${{ inputs.Environment }}
+    - id: wocdelete
+      #if: ${{ inputs.SkipDeleteStep == false }}
+      run: |
+        oc delete all --selector=app=${{ inputs.ImageName }}-${{ inputs.Environment }} --namespace=${{ inputs.ImageName }}-${{ inputs.Environment }} --timeout=100s
+    - id: wocnewapp
+      run: |
+        oc new-app --name=${{ inputs.ImageName }}-${{ inputs.Environment }} --labels=app=${{ inputs.ImageName }}-${{ inputs.Environment }} arodevcr01.azurecr.io/${{ inputs.ImageName }}:latest --namespace=${{ inputs.ImageName }}-${{ inputs.Environment }} ${{ inputs.EnvVariables }}
+    - id: wocpatch
+      run: |
+        oc patch service ${{ inputs.ImageName }}-${{ inputs.Environment }} --patch='{"spec":{"ports":[{"name":"8080-tcp","port":8080}]}}' --namespace=${{ inputs.ImageName }}-${{ inputs.Environment }}
+    - id: wocexpose
+      run: |
+        oc expose service ${{ inputs.ImageName }}-${{ inputs.Environment }} --port=8080 --namespace=${{ inputs.ImageName }}-${{ inputs.Environment }}
+    - id: wocget
+      run: |
+        oc get all --selector=app=${{ inputs.ImageName }}-${{ inputs.Environment }} --namespace=${{ inputs.ImageName }}-${{ inputs.Environment }}
+    - id: wocgetroute
+      run: |
+        oc get route ${{ inputs.ImageName }}-${{ inputs.Environment }} --output jsonpath='{.spec.host}{"\n"}' --namespace=${{ inputs.ImageName }}-${{ inputs.Environment }}

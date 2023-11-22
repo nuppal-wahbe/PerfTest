@@ -1,0 +1,60 @@
+name: AzureAppConfigSync
+
+on:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      Environment:
+        required: true
+        type: string
+      GithubRunnerGroupName:
+        default: "ubuntu-latest"
+        required: false
+        type: string
+      ApplicationPrefix:
+        default: "NoPrefix:"
+        required: false
+        type: string
+      ConfigFileFormat:
+        default: "json"
+        required: false
+        type: string
+      ConfigurationFilePath:
+        default: ""
+        required: false
+        type: string
+      SecretReferencesFilePath:
+        default: ""
+        required: false
+        type: string
+    secrets:
+      APPCONFIG_CONNECTION_STRING:
+        required: true
+
+jobs:
+  syncconfig:
+    environment: ${{ inputs.Environment }}
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+
+    steps:
+      # checkout done so that files in the repo can be read by the sync
+      - uses: actions/checkout@v1
+      - name: AppConfig Sync
+        uses: azure/appconfiguration-sync@v1
+        with:
+          configurationFile: ${{ inputs.ConfigurationFilePath }}
+          format: ${{ inputs.ConfigFileFormat }}
+          connectionString: ${{ secrets.APPCONFIG_CONNECTION_STRING }}
+          separator: ":"
+          prefix: ${{ inputs.ApplicationPrefix }}
+      - name: Secrets Sync
+        if: ${{ inputs.SecretReferencesFilePath != '' }}
+        uses: azure/appconfiguration-sync@v1
+        with:
+          configurationFile: ${{ inputs.SecretReferencesFilePath }}
+          format: ${{ inputs.ConfigFileFormat }}
+          connectionString: ${{ secrets.APPCONFIG_CONNECTION_STRING }}
+          separator: ":"
+          contentType: "application/vnd.microsoft.appconfig.keyvaultref+json;charset=utf-8"
+          prefix: ${{ inputs.ApplicationPrefix }}

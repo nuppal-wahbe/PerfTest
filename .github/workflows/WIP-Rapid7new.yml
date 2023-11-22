@@ -1,0 +1,184 @@
+name: Rapid7 InsightAppSec Scan
+  
+on:
+  workflow_call:
+  
+   inputs:
+      GithubRunnerGroupName:
+        type: string
+        required: true
+        default: 'linux-hosting-nonprod'
+      applicationName:
+        type: string
+        required: true
+      scanConfigId:
+        type: string
+        required: true
+      vulnQuery:
+        type : string
+        required: false
+        default: 'vulnerability.vulnerabilityscore > 4'
+      environment:
+        type: string
+        required: true
+        default: 'Rapid7'
+        
+   secrets:
+      INSIGHTAPPSEC_API_KEY:
+        required: true
+      AZ_STORAGE_KEY_RD:
+        required: true
+        
+  
+jobs:
+  scan:
+    runs-on: ${{inputs.GithubRunnerGroupName}}
+    outputs:
+      scan_id: ${{ steps.parse-scan-id.outputs.scan-id }}
+    steps:
+      - id: my-scan
+        uses: rapid7/insightappsec-scan-github-actions@v1.3.0
+        with:
+          region: "us"
+          api-key: ${{ secrets.INSIGHTAPPSEC_API_KEY }}
+          scan-config-id: ${{inputs.scanConfigId}}
+          vuln-query: ${{inputs.vulnQuery}}
+          wait-for-scan-complete: false
+          
+      - name: Upload findings
+        if: always()
+        run: echo "${{ steps.my-scan.outputs.scan-findings }}"
+
+      - name: Parse substring from scan id and set as output
+        id: parse-scan-id
+        shell: python
+        run: | 
+          scanIdStr = "${{ steps.my-scan.outputs.scan-findings }}"
+
+          # Remove Scan ID: prefix
+          scanIdStr = scanIdStr.replace("Scan ID: ", "")
+
+          # Set as GitHub Actions output
+          print("::set-output name=scan-id::" + scanIdStr)
+        
+  getResults:
+    runs-on: ubuntu-latest
+    needs: scan
+    environment: ${{inputs.environment}}
+    steps:
+      - name: Import requests module for python environment
+        run: pip install requests
+
+      - name: "Get scan results from Rapid7 Search API"
+        shell: python
+        run: |
+            import requests
+            import os
+            import json
+            import re
+
+            # Scan result query string
+            query = {
+             "query": "vulnerability.scans.id = '${{ needs.scan.outputs.scan_id }}' && (vulnerability.severity = 'high' || vulnerability.severity = 'medium' || vulnerability.severity = 'low')",
+            "type": "VULNERABILITY"
+                     }
+
+            # Set headers with X-Api-Key
+            headers = {
+                "X-Api-Key": "${{ secrets.INSIGHTAPPSEC_API_KEY }}"
+            }
+
+            # Make post request to search api for Rapid7 with query as body and headers
+            response = requests.post("https://us.api.insight.rapid7.com/ias/v1/search", json=query, headers=headers)
+
+            # open response.json and iterate through each item
+            vulnerabilityResults = []
+
+            # read json into memory
+            rawResults = json.loads(response.text)
+
+            # Check if we even have results, if not... write the results file
+            if rawResults["metadata"]["total_data"] == 0:
+                with open("./results.json", "w") as f:
+                    json.dump({"vulnerabilityFindings": "0"}, f)
+                exit(0)
+            # Handle pagination
+            # Loop through all pages and collect data
+            for index in range(rawResults["metadata"]["total_pages"]):
+              # Loop through all results and collect data
+              response = requests.post(f"https://us.api.insight.rapid7.com/ias/v1/search?index={index}", json=query, headers=headers)
+              results = json.loads(response.text)
+
+              for item in results["data"]:
+                  vulnerability = {
+                  "vulnerabilityId": item["id"],
+                  "severity": item["severity"],
+                  "status": item["status"],
+                  "first_discovered": item["first_discovered"],
+                  "last_discovered": item["last_discovered"],
+                  "newly_discovered": item["newly_discovered"],
+                  "variances": [variance for variance in item["variances"]]
+              }
+                  vulnerabilityResults.append(vulnerability)
+
+            # remove unnecessary fields from dataStructure
+            for result in vulnerabilityResults:
+                for variance in result["variances"]:
+                    if "original_value" in variance:
+                        del variance["original_value"]  # Statement return keyError if the key_value is not present
+                    #if "original_exchange" in variance:
+                        #source = variance["original_exchange"]["request"]
+                        #source_url = re.search(r"Referer: (.*)\r\n", source).group(1)
+                        #variance["source_url"] = source_url
+                       # del variance["original_exchange"]
+                    if "module" in variance:
+                        del variance["module"]
+                    if "proof" in variance:
+                        del variance["proof"]
+                    if "attack" in variance:
+                        del variance["attack"]
+                    if "attack_value" in variance:
+                        del variance["attack_value"]
+                    if "attack_exchanges" in variance:
+                        del variance["attack_exchanges"]
+
+            # get more variance details from variance ids
+            for vulnerability in vulnerabilityResults:
+              # Empty dictionary of references
+              references = {}
+              for variance in vulnerability["variances"]:
+                # set headers with X-Api-Key
+                headers = {
+                        "X-Api-Key": "${{ secrets.INSIGHTAPPSEC_API_KEY }}"
+                }
+
+                # make get request to variance api for Rapid7 with headers
+                response = requests.get(f"https://us.api.insight.rapid7.com/ias/v1/vulnerabilities/{vulnerability['vulnerabilityId']}/variances/{variance['id']}/documentation", headers=headers)
+
+                # add variance details to dataStructure
+                #variance["variance_details"] = response.json()["data"]
+                variance["variance_details"] = json.loads(response.text)
+                
+                # add references from variance_details to references dictionary and remove from variance_details
+                references.update(variance["variance_details"]["references"])
+                del variance["variance_details"]["references"]
+              vulnerability["references"] = references
+
+            # write results list to file
+            with open("./results.json", "w") as f:
+                json.dump(vulnerabilityResults, f)
+
+
+         
+      - name: Generate Timestamp
+        #if: github.event_name  == 'workflow_dispatch'
+        id: date
+        run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
+    
+    # upload to blob storage to container
+      - name: upload blob storage
+        #if: github.event_name == 'workflow_dispatch'
+        run: |
+         mv  ./results.json   ./${{inputs.applicationName}}_rapid7results_${{ steps.date.outputs.date }}.json
+         az storage blob upload --account-name jamspacetest --account-key ${{ secrets.AZ_STORAGE_KEY_RD }} --container-name rapid7results --file ${{inputs.applicationName}}_rapid7results_${{ steps.date.outputs.date }}.json --overwrite=true
+        

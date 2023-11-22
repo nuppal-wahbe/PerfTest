@@ -1,0 +1,110 @@
+name: Pull from source ACR to target ACR
+
+on:
+  workflow_call:
+    inputs:
+      GithubRunnerGroupNameSource:
+        type: string
+        required: true
+      GithubRunnerGroupNameTarget:
+        type: string
+        required: true
+      ContainerTag:
+        type: string
+        required: true
+      ContainerRepositoryName:
+        required: true
+        type: string
+
+    secrets:
+      CONTAINER_REGISTRY_LOGIN_SERVER_SOURCE:
+        required: true
+      CONTAINER_REGISTRY_USERNAME_SOURCE:
+        required: true
+      CONTAINER_REGISTRY_PASSWORD_SOURCE:
+        required: true
+      CONTAINER_REGISTRY_LOGIN_SERVER_TARGET:
+        required: true
+      CONTAINER_REGISTRY_USERNAME_TARGET:
+        required: true
+      CONTAINER_REGISTRY_PASSWORD_TARGET:
+        required: true
+      OPENSHIFT_SERVER_URL_TARGET:
+        required: false
+      OPENSHIFT_TOKEN_TARGET:
+        required: false
+      AZURE_TENANT_ID:
+        required: false
+      AZURE_CLIENT_ID:
+        required: false
+      AZURE_CLIENT_SECRET:
+        required: false
+
+jobs: 
+  pullImageFromSource:
+    name: Pull image from source ACR
+    runs-on: ${{ inputs.GithubRunnerGroupNameSource }}
+    steps:
+      - name: Pull Info
+        run: echo "Login and Pull image from source ACR " ${{ inputs.ContainerTag }}
+        
+    # Login to Azure Source Container registry     
+      - name: Login to Azure Container registry
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER_SOURCE}}
+          username: ${{secrets.CONTAINER_REGISTRY_USERNAME_SOURCE}}
+          password: ${{secrets.CONTAINER_REGISTRY_PASSWORD_SOURCE}}
+          
+      - name: Print Path for the image down from the source ACR
+        run: echo ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER_SOURCE}}/${{ inputs.ContainerTag }}
+              echo ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER_TARGET}}/${{ inputs.ContainerTag }}
+        
+      - name: Pull the image down from the source ACR
+        run: docker pull ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER_SOURCE}}/${{ inputs.ContainerTag }}
+
+      - name: Save that image into a tar file
+        run: docker save  ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER_SOURCE}}/${{ inputs.ContainerTag }} -o ${{ inputs.ContainerRepositoryName }}.tar    
+        #run: docker save ${{ inputs.ContainerTag }} | gzip > ${{ inputs.ContainerTag }}.tar.gz
+
+      - name: Upload the artifact
+        uses: actions/upload-artifact@v3
+        with:     
+          name: ${{ inputs.ContainerRepositoryName }}.tar 
+          path: ./${{ inputs.ContainerRepositoryName }}.tar 
+         
+  PushImageToTarget:
+    needs: [pullImageFromSource]
+    name: Push image to target ACR
+    runs-on: ${{ inputs.GithubRunnerGroupNameTarget }}
+    steps:
+      - name: Push Info
+        run: echo "Login and Push image to target ACR " ${{ inputs.ContainerRepositoryName }}
+        
+                
+       # Downloads container image from artifacts
+      - name: download image .tar file from Github artifacts
+        uses: actions/download-artifact@v2.0.6
+        with:
+         name: ${{ inputs.ContainerRepositoryName }}.tar
+         path: /tmp
+
+      # Load docker image from .tar file
+      - name: Load docker image from .tar file
+        run: docker load --input /tmp/${{ inputs.ContainerRepositoryName }}.tar
+          
+          
+      # Login to Azure Source Container registry     
+      - name: Login to Azure Container registry
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER_TARGET}}
+          username: ${{secrets.CONTAINER_REGISTRY_USERNAME_TARGET}}
+          password: ${{secrets.CONTAINER_REGISTRY_PASSWORD_TARGET}}
+          
+      # Set the docker image tag to the environmentally specific ccontainer registry server tag
+      - name: Set docker image tag to environmentally specific version for container registry
+        run: docker tag ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER_SOURCE}}/${{ inputs.ContainerTag }}  ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER_TARGET}}/${{ inputs.ContainerTag }}
+    
+      - name: Push the image down from the source ACR
+        run: docker push ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER_TARGET}}/${{ inputs.ContainerTag }}

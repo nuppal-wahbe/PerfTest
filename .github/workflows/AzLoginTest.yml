@@ -1,0 +1,34 @@
+name: AzLoginTest
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      GithubRunnerGroupName:
+        default: 'linux-hosting-nonprod'
+        required: true
+        type: string
+    secrets:
+      SP_CLIENT_ID:
+        required: true
+      SP_CLIENT_SECRET:
+        required: true
+      SUBSCRIPTION_ID:
+        required: true
+      TENANT_ID:
+        required: true
+
+
+jobs:
+  deploy:
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+
+    steps:
+
+    - name: acquiring DB Access Token
+      id: sql-login
+      uses: Azure/azure-resource-login-action@v1.0.0
+      with:
+        creds: "{ \"clientId\":\"${{ secrets.SP_CLIENT_ID }}\", \"clientSecret\":\"${{ secrets.SP_CLIENT_SECRET }}\", \"subscriptionId\":\"${{ secrets.SUBSCRIPTION_ID }}\", \"tenantId\":\"${{ secrets.TENANT_ID }}\" }"
+        resource-url: "https://database.windows.net"
+    

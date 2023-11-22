@@ -1,0 +1,66 @@
+name: IstioConfiguration
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      Environment:
+        required: true
+        type: string
+      GithubRunnerGroupName:
+        default: 'linux-hosting-nonprod'
+        required: false
+        type: string      
+      AroProjectName:
+        required: true
+        type: string
+      ApplicationName:
+        required: true
+        type: string            
+    secrets: 
+      OPENSHIFT_SERVER_URL:
+        required: true
+      OPENSHIFT_TOKEN:
+        required: true      
+
+jobs:
+  deploy:
+    environment: ${{ inputs.Environment }}
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+
+    steps:
+
+    # ingest Istio sidecar Configuration
+
+    # Login to OpenShift
+    - name: Login to OpenShift
+      uses: redhat-actions/oc-login@v1
+      with:
+        openshift_server_url: ${{ secrets.OPENSHIFT_SERVER_URL }}
+        openshift_token: ${{ secrets.OPENSHIFT_TOKEN }}
+        insecure_skip_tls_verify: true
+        namespace: ${{ inputs.AroProjectName }}
+
+    # Istio Configuration in ARO    
+    - name: ADD Istio Configuration - ingest istio sidecar
+      run: >
+        oc patch deployment ${{ inputs.ApplicationName }} -p '{"spec":{"template":{"metadata":{"annotations":{"sidecar.istio.io/inject":"true"}}}}}' -n ${{inputs.AroProjectName}}       
+        
+    - name: proxyCPU
+      run: >
+        oc patch deployment ${{ inputs.ApplicationName }} -p '{"spec":{"template":{"metadata":{"annotations":{"sidecar.istio.io/proxyCPU":"50m"}}}}}' -n ${{inputs.AroProjectName}}
+  
+    - name: proxyCPULimit
+      run: >
+        oc patch deployment ${{ inputs.ApplicationName }} -p '{"spec":{"template":{"metadata":{"annotations":{"sidecar.istio.io/proxyCPULimit":"100m"}}}}}' -n ${{inputs.AroProjectName}}
+        
+    - name: proxyMemory
+      run: >
+        oc patch deployment ${{ inputs.ApplicationName }} -p '{"spec":{"template":{"metadata":{"annotations":{"sidecar.istio.io/proxyMemory":"100Mi"}}}}}' -n ${{inputs.AroProjectName}}
+    - name: proxyMemoryLimit
+      run: >
+        oc patch deployment ${{ inputs.ApplicationName }} -p '{"spec":{"template":{"metadata":{"annotations":{"sidecar.istio.io/proxyMemoryLimit":"200Mi"}}}}}' -n ${{inputs.AroProjectName}}
+        
+    - name: excludeOutboundPorts
+      run: >
+        oc patch deployment ${{ inputs.ApplicationName }} -p '{"spec":{"template":{"metadata":{"annotations":{"traffic.sidecar.istio.io/excludeOutboundPorts":"14268"}}}}}' -n ${{inputs.AroProjectName}}

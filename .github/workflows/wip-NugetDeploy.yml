@@ -1,0 +1,49 @@
+name: NugetDeploy
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      LibraryName:
+        required: true
+        type: string
+
+    secrets:
+      REPO_GITHUB_TOKEN:
+        required: true
+jobs:
+  deploy:      
+    runs-on: ubuntu-latest
+
+    steps:    
+    - uses: actions/checkout@v2
+  
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v1
+      with:
+        dotnet-version: '6.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Generate version
+      run: |
+        GITHUB_RUN_NUMBER="${{ github.run_number }}"
+        VERSION_PREFIX=$(grep -oPm1 "(?<=<VersionPrefix>)[^<]+" ./${{ inputs.LibraryName }}/${{ inputs.LibraryName }}.csproj)
+        FULL_VERSION="${VERSION_PREFIX}.${GITHUB_RUN_NUMBER}"
+        echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
+
+    - name: Check for changes in ${{ inputs.LibraryName }}
+      id: lib-changes
+      uses: dorny/paths-filter@v2
+      with:
+        filters: |
+          lib:
+            - './${{ inputs.LibraryName }}/**'  
+            
+    - name: Build, Pack and Push ${{ inputs.LibraryName }}
+      if: steps.lib-changes.outputs.lib == 'true'
+      run: |
+        dotnet build ./${{ inputs.LibraryName }} --configuration Release --no-restore
+        dotnet pack ./${{ inputs.LibraryName }} --configuration Release --no-build -p:PackageVersion=$FULL_VERSION -o out
+        dotnet nuget push "./out/${{ inputs.LibraryName }}.*.nupkg" --api-key ${{ secrets.REPO_GITHUB_TOKEN }} --source https://nuget.pkg.github.com/WAHBEcorp/index.json

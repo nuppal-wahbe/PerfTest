@@ -1,0 +1,45 @@
+name: AroHttpsRoute
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      GithubRunnerGroupName:
+        default: 'ubuntu-latest'
+        required: false
+        type: string    
+      Environment:
+        required: true
+        type: string
+      ApplicationName:
+        required: true
+        type: string
+      AppRouteHost:
+        required: true
+        type: string
+    secrets:
+      OPENSHIFT_SERVER_URL:
+        required: true
+      OPENSHIFT_TOKEN:
+        required: true   
+
+jobs:
+  deploy:
+    environment: ${{ inputs.Environment }}
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+
+    steps:
+    # Login to OpenShift
+    - name: Login to OpenShift
+      uses: redhat-actions/oc-login@v1
+      with:
+        openshift_server_url: ${{ secrets.OPENSHIFT_SERVER_URL }}
+        openshift_token: ${{ secrets.OPENSHIFT_TOKEN }}
+        insecure_skip_tls_verify: true
+        namespace: ${{ inputs.ApplicationName }}-${{ inputs.Environment }}
+
+        # Create ARO Https Route
+    - name: Create ARO Https Route
+      run: >
+        oc create route edge ${{ inputs.ApplicationName }}-${{ inputs.Environment }}-https --service=${{ inputs.ApplicationName }}-${{ inputs.Environment }} --hostname=${{ inputs.AppRouteHost }} --namespace=${{ inputs.ApplicationName }}-${{ inputs.Environment }}
+        

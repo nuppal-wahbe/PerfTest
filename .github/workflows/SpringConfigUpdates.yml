@@ -1,0 +1,146 @@
+name: DEV OCP - Mod Helper Spring Config Update
+on: 
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      Envrn:
+        required: true
+        type: string
+      GithubRunnerGroupName:
+        default: 'linux-hosting-nonprod'
+        required: false
+        type: string
+      AroProjectName:
+        required: true
+        type: string
+      ApplicationName:
+        required: true
+        type: string
+      ApplicationDirectory:
+        required: true
+        type: string
+      AppRouteHost:
+        required: true
+        type: string   
+      RouteTimeoutInSeconds:
+        required: false
+        default: ""
+        type: string
+      IsNewApp:
+        required: false
+        default: false
+        type: boolean        
+    secrets:
+      ARO_URL:
+        required: true
+      ARO_ACCESS_TOKEN:
+        required: true
+
+
+env:
+  #OCP_URL: https://api.aro901.wahpf.cloud:6443
+  OCP_IS_NAMESPACE: actionsdepot-java-dev
+  #APP_ROUTE_HOST: actionsdepot-java-dev.apps.aro901.wahpf.cloud
+  CONFIG_PATH: "config-files"
+  #CONFIG_PATH: /home/runner/work/JavaHutTest/JavaHutTest/config-files/
+  #CONFIG_PATH: /home/git-runner-srvc-np@WAHBEhosting.org/actions-runner/_work/Eligibility/Eligibility/config-files/
+  #OCP_URL: https://api.npopenshift.wahpf.org:6443
+ 
+jobs:
+  #####################################################################################################################
+  ## The Checkout job clones the GIT repo from desired branch
+  checkout:
+    name: Update_SpringConfig_Properties
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+    environment: ${{ inputs.Envrn }}
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Print Current Directory
+      run: |
+        pwd
+        ls -l
+        echo ${{ github.workspace }} 
+
+      # Login to OpenShift
+    - name: Login to OpenShift
+      uses: redhat-actions/oc-login@v1
+      with:
+        openshift_server_url: ${{ secrets.ARO_URL }}
+        openshift_token: ${{ secrets.ARO_ACCESS_TOKEN }}
+        insecure_skip_tls_verify: true
+        namespace: actionsdepot-java-${{ inputs.Envrn }}
+    
+      # update yaml file with service names and project names  
+    - name: Update content using sed
+      if: ${{ inputs.IsNewApp == true }}  
+      run: |
+        echo "## Update deployment yaml##"  
+        echo "## Update service name##"  
+        sed -i 's/<service-name>/${{ inputs.ApplicationName }}/g' deployment/deployment.yaml
+        echo "## Update project name##"  
+        sed -i 's/<project-name>/${{ inputs.AroProjectName }}/g' deployment/deployment.yaml
+        echo "## Update sa-creation.yaml##"  
+        echo "## Update service name##"  
+        sed -i 's/<service-name>/${{ inputs.ApplicationName }}/g' deployment/sa-creation.yaml
+        echo "## Update project name##"  
+        sed -i 's/<project-name>/${{ inputs.AroProjectName }}/g' deployment/sa-creation.yaml
+        echo "## Update service-creation.yaml##"  
+        echo "## Update service name##"  
+        sed -i 's/<service-name>/${{ inputs.ApplicationName }}/g' deployment/service-creation.yaml
+        echo "## Update project name##"  
+        sed -i 's/<project-name>/${{ inputs.AroProjectName }}/g' deployment/service-creation.yaml
+
+      # Update the Spring-Config Server Secrets
+    - name: Set Spring-Config Deployment Secrets and start Pods
+      if: ${{ inputs.IsNewApp == true }}
+      run: |
+        # echo "#####add project level secret - Run during project setup"
+        # oc create secret generic vlp-config-env  --from-literal=USER=root --from-literal=PASS=s3cr3t --from-literal SYSTEM_ENV_MS_PROFILE=dev --from-literal=SYSTEM_ENV_CLOUD_CONFIG_HOST=http://spring-config.spring-config.svc.cluster.local:8888 --from-literal=JAEGER_ENDPOINT=http://jaeger-collector.istio-system.svc.cluster.local:14268/api/traces --from-literal=JAEGER_PROPAGATION=b3 --from-literal=ENCRYPTION_KEY=TheBestSecretKey --from-literal=JAEGER_REPORTER_LOG_SPANS=true -n ${{ inputs.AroProjectName }}
+
+        echo "#####Create Sprinf-Cofig secrets"
+        oc create secret generic ${{ inputs.ApplicationName}} --from-file=${{ github.workspace }}/${{ env.CONFIG_PATH }}/${{ inputs.ApplicationDirectory}}/ -n ${{ inputs.AroProjectName }}
+        #oc create secret generic ${{ inputs.ApplicationName}} --from-file=${{ github.workspace }}/${{ env.CONFIG_PATH }}/ -n ${{ inputs.AroProjectName }}
+        
+        echo "#####Set Volume mount"
+        oc set volume deployment/spring-config --add --type secret --secret-name ${{ inputs.ApplicationName}} --name ${{ inputs.ApplicationName}}-volume --mount-path /opt/hpf-properties/${{ inputs.ApplicationDirectory}} -n ${{ env.OCP_IS_NAMESPACE }}
+        
+        # echo "#####Create ServiceAccount, Deployment and Service Components"
+        # oc create -f deployment/${{ inputs.ApplicationDirectory }}-${{ inputs.Envrn }}-deployment.yaml
+
+        echo "#####Create ServiceAccount"
+        oc create -f deployment/sa-creation.yaml
+
+        echo "#####Create Service Components"
+        oc create -f deployment/service-creation.yaml
+
+        echo "#####Create Deployment "
+        oc create -f deployment/deployment.yaml
+
+        echo "#####Set image change triggers"
+        oc set triggers deployment/${{ inputs.ApplicationName}} --from-image=${{ inputs.AroProjectName }}/${{ inputs.ApplicationName}}:latest -c ${{ inputs.ApplicationName}} -n ${{ inputs.AroProjectName }}
+
+        echo "#####Add the environment variable for environment"
+        oc set env deployment/${{inputs.ApplicationName}} Environment=${{ inputs.Envrn }}
+
+        echo "####Create Routes"
+        #oc apply -f /home/osuser-srvc-utl@WAHBEhosting.org/verfication/gateway_verification_dev.yaml -n verification-dev
+        oc create route edge ${{ inputs.ApplicationName}}-https --service=${{ inputs.ApplicationName}} --hostname=${{inputs.ApplicationName}}-${{ inputs.AppRouteHost }} --namespace=${{ inputs.AroProjectName }}
+
+        oc scale deployment/spring-config --replicas=0 --namespace=${{ env.OCP_IS_NAMESPACE }}
+        oc scale deployment/spring-config --replicas=1 --namespace=${{ env.OCP_IS_NAMESPACE }}
+        echo "*****Restarted Spring-Config Server"
+        echo "#####End Sprinf-Config secrets update"
+
+    # Update the Spring-Config Server Secrets
+    - name: Update Spring-Config Deployment Secrets and Restart Pods
+      if: ${{ inputs.IsNewApp == false }}
+      run: |
+        echo "#####Start Sprinf-Cofig secrets update"
+        oc set data secret/${{ inputs.ApplicationName}} --from-file=${{ github.workspace }}/${{ env.CONFIG_PATH }}/${{ inputs.ApplicationDirectory}}/ -n ${{ inputs.AroProjectName }}
+        #oc set data secret/${{ inputs.ApplicationName}} --from-file=${{ github.workspace }}/${{ env.CONFIG_PATH }}/ -n ${{ inputs.AroProjectName }}
+        echo "#####Sprinf-Cofig Secret updated"
+        oc scale deployment/spring-config --replicas=0 --namespace=${{ env.OCP_IS_NAMESPACE }}
+        oc scale deployment/spring-config --replicas=1 --namespace=${{ env.OCP_IS_NAMESPACE }}
+        echo "*****Restarted Spring-Config Server"
+        echo "#####End Sprinf-Config secrets update"      

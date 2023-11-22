@@ -1,0 +1,82 @@
+name: Execute Automated Tests
+on: 
+  workflow_call:
+    inputs:
+      automationRepoName:
+        type: string
+        required: true
+      testSuiteDir:
+        type: string
+        required: true
+      testOutputDirectory:
+        type: string
+        required: true
+      targetDir: 
+        type: string
+        required: true
+      testSuiteProfile:
+        type: string
+        required: true
+      orgName:
+        type: string
+        required: true
+      environment:
+        type: string
+        required: true
+    secrets:
+      automationRepoToken:
+        required: true
+
+jobs:
+  ## This job will execute tests and generate a report that is a consumable artifact for GitHub Actions, create an issue against the repository that called these tests, and upload into Azure Storage TODO
+  runTests:
+    name: Compile and run Maven tests
+    #runs-on: [self-hosted, linux, x64, plan_management, non_prod]
+    runs-on: [linux-hosting-nonprod]
+    environment: ${{ inputs.environment }}  
+      
+    outputs:
+      jarname: ${{ steps.get-jarname.outputs.jarname }}
+      commit_sha: ${{ steps.commit-data.outputs.short_sha }}
+      artifactDate: ${{ steps.date.outputs.date }}
+
+    # env:
+    #   TARGET_DIR: ${{ inputs.targetDir }}
+    #   MVN_REPO_DIR: ~/.m2/repository
+
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        repository: ${{ inputs.automationRepoName }}
+        token: ${{ secrets.automationRepoToken }}
+        #ref: 'feature-nuppal'
+
+    - name: Setup Java
+      uses: actions/setup-java@v1
+      with:
+        java-version: 8
+
+    - name: Set up Maven
+      uses: stCarolas/setup-maven@v4.2
+      with:
+        maven-version: 3.8.2
+     
+    - name: Check JAVA and MVN Version
+      run: |
+       echo "#####JAVA Version#####"
+       java -version
+       echo "#####MVN Version#####"
+       mvn -version
+  
+    - run: mvn clean compile test -P${{ inputs.testSuiteProfile }} -Denv=${{ vars.TEST_ENVIRONMENT }}
+      working-directory: ${{ inputs.testSuiteDir }}
+     
+        
+    - name: Upload a Junit Report Artifact
+      if: always()
+      uses: actions/upload-artifact@v3.1.0
+      with:
+        # Artifact name
+        name: JUnitReport
+        # A file, directory or wildcard pattern that describes what to upload
+        path: ./${{ inputs.testOutputDirectory }}

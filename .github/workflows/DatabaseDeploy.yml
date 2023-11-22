@@ -1,0 +1,57 @@
+name: DatabaseDeploy
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      DacpacVersionNumber:
+        required: true
+        type: string
+      Environment:
+        required: true
+        type: string
+      GithubRunnerGroupName:
+        default: 'linux-hosting-nonprod'
+        required: false
+        type: string
+
+jobs:
+  deploy:
+    environment: ${{ inputs.Environment }}
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+
+    steps:
+    
+    - name: downloading DACPAC from Blob storage
+      run: |
+        az storage blob download --account-name ${{ vars.STOR_ACCT_NAME }} -c ${{ vars.STOR_ACCT_CONTAINER }} -n ${{ vars.DB_PROJECT_NAME }}-v${{ inputs.DacpacVersionNumber }}.dacpac --file ./${{ vars.DB_PROJECT_NAME }}.dacpac --account-key ${{ secrets.STOR_ACCT_KEY }}
+
+    - name: downloading profile.xml from Blob storage
+      run: |
+        az storage blob download --account-name ${{ vars.STOR_ACCT_NAME }} -c ${{ vars.STOR_ACCT_CONTAINER }} -n ${{ vars.DB_PROJECT_NAME }}-profile.xml --file ./profile.xml --account-key ${{ secrets.STOR_ACCT_KEY }}
+
+    - name: azure-pwsh-login
+      uses: azure/login@v1
+      with:
+        creds: "{ \"clientId\":\"${{ secrets.DB_SP_CLIENT_ID }}\", \"clientSecret\":\"${{ secrets.DB_SP_CLIENT_SECRET }}\", \"subscriptionId\":\"${{ secrets.AZURE_SUBSCRIPTION_ID_WAHBEHOSTING }}\", \"tenantId\":\"${{ secrets.AZURE_TENANT_ID_COMMERCIAL }}\" }"
+        enable-AzPSSession: true
+
+    - id: get-db-access-token
+      name: get-AzAccessToken
+      shell: pwsh
+      run: |
+        $context = Get-AzContext
+        $resource = Get-AzAccessToken -ResourceUrl "https://database.windows.net" -DefaultProfile $context
+        $resourceToken = $resource.Token
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "token=$resourceToken"
+
+    - name: deploying DACPAC to target database
+      id: deploy-target
+      uses: Azure/run-sqlpackage-action@v1.0.0
+      with:
+        action: 'Publish'
+        sourcepath: .
+        profile: profile.xml
+        database-server: ${{ vars.DATABASE_SERVER }}
+        database-name: ${{ vars.DATABASE_NAME }}
+        authtoken: ${{ steps.get-db-access-token.outputs.token }}

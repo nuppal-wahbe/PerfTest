@@ -1,0 +1,84 @@
+name: DotNet Automated Testing
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      repoName:
+        type: string
+        required: true
+        description: The name of the repository to run dotnet tests against
+      suiteName:
+        type: string
+        required: true
+        description: The name of the test suite to run
+      #outputDir:
+      #  type: string
+      #  required: true
+      #  description: The directory to output the test results to
+      uiTest:
+        type: boolean
+        required: false
+        description: Whether or not to run UI tests
+      GithubRunnerGroupName:
+        type: string
+        default: 'linux-hosting-nonprod'
+        required: false
+      environment:
+        type: string
+        default: 'test'
+        required: false
+      DotNetVersion:
+          default: '6.0.x'
+          required: false
+          type: string
+      #workingDir:
+      #    type: string
+      #    required: false
+      #    description: The directory to run the test results 
+        
+      
+    secrets:
+      repoToken:
+        required: true
+      
+      
+jobs:
+  runAutomatedTests:
+    name: Run Automated Tests
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+
+    steps:
+    - name: Download Automation
+      uses: actions/checkout@v2
+      with:
+        repository: ${{ inputs.repoName }}
+        token: ${{ secrets.repoToken }}
+        
+    - name: Setup dotnet
+      uses: actions/setup-dotnet@v3
+      with:
+       dotnet-version: ${{ inputs.DotNetVersion }}
+    
+    - name: Install dependencies
+      run: dotnet restore
+    
+    
+    - name: Build AutomatedTest
+      run: |	             
+        dotnet build ${{ inputs.suiteName }}/${{ inputs.suiteName }}.csproj
+      
+   
+    - name: Setup Chrome Driver
+      if: ${{ inputs.uiTest == true }} 
+      uses: nanasess/setup-chromedriver@master
+         
+    - name: Run AutomatedTest
+      run: |
+        dotnet test "-l:trx;LogFileName=TestOutput.xml"
+  
+    - name: Upload a Build Artifact
+      uses: actions/upload-artifact@v3.1.0
+      with:    
+        name: NUnitReport    
+        path: ${{ github.workspace }}/${{ inputs.suiteName }}/TestResults/TestOutput.xml

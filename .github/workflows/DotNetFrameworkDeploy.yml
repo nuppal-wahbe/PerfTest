@@ -1,0 +1,125 @@
+name: DotNetFrameworkDeploy
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ApplicationName:
+        required: true
+        type: string
+      GithubRunnerGroupName:
+        default: 'ubuntu-latest'
+        required: false
+        type: string
+      DotNetVersion:
+        default: '4.8'
+        required: false
+        type: string
+      ContainerTag:
+        required: true
+        type: string
+      DockerFilePath:
+        default: './Api/Dockerfile'
+        required: false
+        type: string
+      BuildArtifactRetentionDays:
+        default: 3
+        required: false
+        type: number
+      
+      #aro deployment project name
+      AroProjectName:
+        required: true
+        type: string
+    secrets:
+      CONTAINER_REGISTRY_LOGIN_SERVER:
+        required: true
+      CONTAINER_REGISTRY_USERNAME:
+        required: true
+      CONTAINER_REGISTRY_PASSWORD:
+        required: true
+      #aro deployment secrets  
+      OPENSHIFT_SERVER_URL:
+        required: true
+      OPENSHIFT_TOKEN:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_CLIENT_SECRET:
+        required: true
+jobs:
+  build:
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+   
+    steps:    
+    # Login to Azure Container registry
+    - name: Login to Azure Container registry
+      uses: azure/docker-login@v1
+      with:
+         login-server: ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER}}
+         username: ${{secrets.CONTAINER_REGISTRY_USERNAME}}
+         password: ${{secrets.CONTAINER_REGISTRY_PASSWORD}}
+  
+    # Deployment to ARO / OpenShift 
+    # Login to OpenShift
+    - name: Login to OpenShift
+      uses: redhat-actions/oc-login@v1
+      with:
+          openshift_server_url: ${{ secrets.OPENSHIFT_SERVER_URL }}
+          openshift_token: ${{ secrets.OPENSHIFT_TOKEN }}
+          insecure_skip_tls_verify: true
+          namespace: ${{ inputs.AroProjectName }}
+
+      # Create Azure Container Registry secret
+    - name: Create Azure Container Registry secret
+      run: >
+          oc create secret docker-registry
+          --docker-server=${{ secrets.CONTAINER_REGISTRY_LOGIN_SERVER }}
+          --docker-username=${{ secrets.CONTAINER_REGISTRY_USERNAME }}
+          --docker-password=${{ secrets.CONTAINER_REGISTRY_PASSWORD }}
+          --docker-email=unused
+          acr-secret --dry-run=client --save-config -o yaml > acr-secret.yaml
+      # Add Azure Container Registry secret
+    - name: Add Azure Container Registry secret
+      run: >
+          oc apply -f acr-secret.yaml
+      # Create service principal secret
+    - name: Create service principal secret
+      run: >
+          oc create secret generic
+          --from-literal=AZURE_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}
+          --from-literal=AZURE_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}
+          --from-literal=AZURE_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}
+          service-principal --dry-run=client --save-config -o yaml > service-principal.yaml
+    # Add Service Principal secret
+    - name: Add Service Principal secret
+      run: >
+          oc apply -f service-principal.yaml
+          
+    # Deploy our sample application with oc.
+    # This will take down all old deployments before creating a new deployment
+    - name: Create new application in Openshift
+      if: always()
+      id: oc-new-app
+      uses: redhat-actions/oc-new-app@v1
+      with:
+          app_name: ${{inputs.ApplicationName}}
+          port: 8080
+          namespace: ${{inputs.AroProjectName}}
+          image: ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER}}/${{ inputs.ContainerTag }}
+          image_pull_secret_name: acr-secret
+
+    # Add the environment variables from the service principal OpenShift Secret so the app can use the service principal
+    - name: ADD service principal ENV variable to new app deployment
+      run: oc set env deployment/${{inputs.ApplicationName}} --from=secret/service-principal --namespace=${{inputs.AroProjectName}}
+
+    # Add the environment variable for environment (Dev, test, prod, etc.)
+    - name: ADD Env variable for Environment (Dev, Test, Prod, etc.)
+      run: oc set env deployment/${{inputs.ApplicationName}} Environment=${{ inputs.Environment }}
+
+    # Create ARO Https Route
+    - name: Create ARO Https Route
+      run: >
+         oc create route edge ${{inputs.AroProjectName}}-https --service=${{ inputs.ApplicationName }} --hostname=${{ inputs.AppRouteHost }} --namespace=${{inputs.AroProjectName}} --port=8080 --insecure-policy='Allow' --path='/'  

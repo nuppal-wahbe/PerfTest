@@ -1,0 +1,161 @@
+name: DotNetApiDeploy
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      Environment:
+        required: true
+        type: string
+      GithubRunnerGroupName:
+        default: 'linux-hosting-nonprod'
+        required: false
+        type: string
+      ContainerTag:
+        required: true
+        type: string
+      AroProjectName:
+        required: true
+        type: string
+      ApplicationName:
+        required: true
+        type: string
+      AppRouteHost:
+        required: true
+        type: string        
+    secrets:
+      CONTAINER_REGISTRY_LOGIN_SERVER:
+        required: true
+      CONTAINER_REGISTRY_USERNAME:
+        required: true
+      CONTAINER_REGISTRY_PASSWORD:
+        required: true
+      OPENSHIFT_SERVER_URL:
+        required: true
+      OPENSHIFT_TOKEN:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_CLIENT_SECRET:
+        required: true
+
+jobs:
+  deploy:
+    environment: ${{ inputs.Environment }}
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+
+    steps:
+
+    # Downloads container image from artifacts
+    - name: download image .tar file from Github artifacts
+      uses: actions/download-artifact@v2.0.6
+      with:
+        name: app
+        path: /tmp
+
+    # Load docker image from .tar file
+    - name: Load docker image from .tar file
+      run: docker load --input /tmp/image.tar 
+
+    # Set the docker image tag to the environmentally specific ccontainer registry server tag
+    - name: Set docker image tag to environmentally specific version for container registry
+      run: docker tag api ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER}}/${{ inputs.ContainerTag }}
+
+    # Login to Azure Container registry     
+    - name: Login to Azure Container registry
+      uses: azure/docker-login@v1
+      with:
+        login-server: ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER}}
+        username: ${{secrets.CONTAINER_REGISTRY_USERNAME}}
+        password: ${{secrets.CONTAINER_REGISTRY_PASSWORD}}
+
+    # Push Docker image to Azure Container Registry  
+    - name: Push Docker image to Azure Container Registry 
+      run: docker push ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER}}/${{ inputs.ContainerTag }}
+
+    # Login to OpenShift
+    - name: Login to OpenShift
+      uses: redhat-actions/oc-login@v1
+      with:
+        openshift_server_url: ${{ secrets.OPENSHIFT_SERVER_URL }}
+        openshift_token: ${{ secrets.OPENSHIFT_TOKEN }}
+        insecure_skip_tls_verify: true
+        namespace: ${{ inputs.AroProjectName }}
+
+    # Create Azure Container Registry secret
+    - name: Create Azure Container Registry secret
+      run: >
+        oc create secret docker-registry
+        --docker-server=${{ secrets.CONTAINER_REGISTRY_LOGIN_SERVER }}
+        --docker-username=${{ secrets.CONTAINER_REGISTRY_USERNAME }}
+        --docker-password=${{ secrets.CONTAINER_REGISTRY_PASSWORD }}
+        --docker-email=unused
+        acr-secret --dry-run=client --save-config -o yaml > acr-secret.yaml
+    # Add Azure Container Registry secret
+    - name: Add Azure Container Registry secret
+      run: >
+        oc apply -f acr-secret.yaml
+    # Create service principal secret
+    - name: Create service principal secret
+      run: >
+        oc create secret generic
+        --from-literal=AZURE_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}
+        --from-literal=AZURE_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}
+        --from-literal=AZURE_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}
+        service-principal --dry-run=client --save-config -o yaml > service-principle.yaml
+    # Add Service Principle secret
+    - name: Add Service Principle secret
+      run: >
+        oc apply -f service-principle.yaml
+    # Deploy our sample application with oc.
+    # This will take down all old deployments before creating a new deployment
+    - name: Create new application in Openshift
+      if: always()
+      id: oc-new-app
+      uses: redhat-actions/oc-new-app@v1
+      with:
+        app_name: ${{inputs.ApplicationName}}
+        port: 8080
+        namespace: ${{inputs.AroProjectName}}
+        image: ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER}}/${{ inputs.ContainerTag }}
+        image_pull_secret_name: acr-secret  
+
+    # Add the environment variables from the service principal OpenShift Secret so the app can use the service principal
+    - name: ADD service principal ENV variable to new app deployment
+      run: oc set env deployment/${{inputs.ApplicationName}} --from=secret/service-principal --namespace=${{inputs.AroProjectName}}
+
+    # Add the environment variable for environment (Dev, test, prod, etc.)
+    - name: ADD Env variable for Environment (Dev, Test, Prod, etc.)
+      run: oc set env deployment/${{inputs.ApplicationName}} Environment=${{ inputs.Environment }}
+      
+    # Create ARO Https Route
+    - name: Create ARO Https Route
+      run: >
+        oc create route edge ${{inputs.AroProjectName}}-https --service=${{ inputs.ApplicationName }} --hostname=${{ inputs.AppRouteHost }} --namespace=${{inputs.AroProjectName}} --port=8080 --insecure-policy='Allow' --path='/'
+        
+     # Istio Configuration in ARO    
+    - name: ADD Istio Configuration - ingest istio sidecar
+      run: >
+        oc patch deployment ${{ inputs.ApplicationName }} -p '{"spec":{"template":{"metadata":{"annotations":{"sidecar.istio.io/inject":"true"}}}}}' -n ${{inputs.AroProjectName}}       
+        
+    - name: proxyCPU
+      run: >
+        oc patch deployment ${{ inputs.ApplicationName }} -p '{"spec":{"template":{"metadata":{"annotations":{"sidecar.istio.io/proxyCPU":"50m"}}}}}' -n ${{inputs.AroProjectName}}
+  
+    - name: proxyCPULimit
+      run: >
+        oc patch deployment ${{ inputs.ApplicationName }} -p '{"spec":{"template":{"metadata":{"annotations":{"sidecar.istio.io/proxyCPULimit":"100m"}}}}}' -n ${{inputs.AroProjectName}}
+        
+    - name: proxyMemory
+      run: >
+        oc patch deployment ${{ inputs.ApplicationName }} -p '{"spec":{"template":{"metadata":{"annotations":{"sidecar.istio.io/proxyMemory":"100Mi"}}}}}' -n ${{inputs.AroProjectName}}
+
+    - name: proxyMemoryLimit
+      run: >
+        oc patch deployment ${{ inputs.ApplicationName }} -p '{"spec":{"template":{"metadata":{"annotations":{"sidecar.istio.io/proxyMemoryLimit":"200Mi"}}}}}' -n ${{inputs.AroProjectName}}
+        
+    - name: excludeOutboundPorts
+      run: >
+        oc patch deployment ${{ inputs.ApplicationName }} -p '{"spec":{"template":{"metadata":{"annotations":{"traffic.sidecar.istio.io/excludeOutboundPorts":"14268"}}}}}' -n ${{inputs.AroProjectName}}             

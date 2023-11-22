@@ -1,0 +1,73 @@
+name: ReactBuild
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      GithubRunnerGroupName:
+        default: "ubuntu-latest"
+        required: false
+        type: string
+      DockerFilePath:
+        default: "./Dockerfile"
+        required: false
+        type: string
+      BuildArtifactRetentionDays:
+        default: 3
+        required: false
+        type: number
+      RunTests:
+        default: true
+        required: false
+        type: boolean
+      Environment:
+        required: true
+        type: string
+jobs:
+  build:
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+
+    strategy:
+      matrix:
+        node-version: [18.3.0]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Rename config.${{ inputs.Environment }}.json
+        shell: bash
+        run: |
+          rm src/config.json
+          mv src/config.${{ inputs.Environment }}.json src/config.json
+          rm src/config.*.json
+      - name: Install dependencies
+        run: npm i
+
+      - name: Build
+        run: npm run build --if-present
+
+      - name: Run the tests
+        if: ${{ inputs.RunTests }}
+        run: npm test
+
+      # Setup docker build X so that we can build and export the image to a tar file
+      - name: "Set up docker build x"
+        uses: docker/setup-buildx-action@v1
+
+      # Build docker image and export to a .tar file
+      - name: Build and export image to .tar file
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          file: ${{ inputs.DockerFilePath }}
+          tags: react-${{ inputs.Environment }}
+          outputs: type=docker,dest=/tmp/image-${{ inputs.Environment }}.tar
+
+      # Upload the image tar file so that we can use it to deploy to multiple environments
+      - name: Upload image .tar file to Github artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: react-${{ inputs.Environment }}
+          path: "/tmp/image-${{ inputs.Environment }}.tar"
+          retention-days: ${{ inputs.BuildArtifactRetentionDays }}

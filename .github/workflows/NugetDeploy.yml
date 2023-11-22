@@ -1,0 +1,69 @@
+name: NugetDeploy
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      LibraryName:
+        required: true
+        type: string
+
+    secrets:
+      REPO_GITHUB_TOKEN:
+        required: true
+jobs:
+  deploy:      
+    runs-on: ubuntu-latest
+
+    steps:    
+    - uses: actions/checkout@v2
+
+    - name: Get latest release number via GitHub API
+      id: get_release_number
+      run: |
+        release_number=$(gh api https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name)
+        # remove v from tag
+        release_number=${release_number:1}
+        echo "release_number=$release_number" >> $GITHUB_OUTPUT
+      env:
+        GH_TOKEN: ${{ secrets.REPO_GITHUB_TOKEN }}
+  
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v1
+      with:
+        dotnet-version: '6.0.x'
+
+    - name: Update version number of project
+      shell: python
+      run: |
+        import xml.etree.ElementTree as ET
+
+        tree = ET.parse('${{ inputs.LibraryName }}.csproj')
+
+        elem = tree.find('PropertyGroup/Version')
+        elem.text = '${{ steps.get_release_number.outputs.release_number }}'
+      working-directory: ./${{ inputs.LibraryName }}
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    # - name: Generate version
+    #   run: |
+    #     GITHUB_RUN_NUMBER="${{ github.run_number }}"
+    #     VERSION_PREFIX=$(grep -oPm1 "(?<=<VersionPrefix>)[^<]+" ./${{ inputs.LibraryName }}/${{ inputs.LibraryName }}.csproj)
+    #     FULL_VERSION="${VERSION_PREFIX}.${GITHUB_RUN_NUMBER}"
+    #     echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
+
+    # - name: Check for changes in ${{ inputs.LibraryName }}
+    #   id: lib-changes
+    #   uses: dorny/paths-filter@v2
+    #   with:
+    #     filters: |
+    #       lib:
+    #         - './${{ inputs.LibraryName }}/**'  
+            
+    - name: Build, Pack and Push ${{ inputs.LibraryName }}
+      run: |
+        dotnet build ./${{ inputs.LibraryName }} --configuration Release --no-restore
+        dotnet pack ./${{ inputs.LibraryName }} --configuration Release --no-build -o out
+        dotnet nuget push "./out/${{ inputs.LibraryName }}.*.nupkg" --api-key ${{ secrets.REPO_GITHUB_TOKEN }} --source https://nuget.pkg.github.com/WAHBEcorp/index.json

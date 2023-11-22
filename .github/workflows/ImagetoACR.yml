@@ -1,0 +1,91 @@
+name: ImagetoACR
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      Environment:
+        required: true
+        type: string
+      GithubRunnerGroupName:
+        default: 'linux-hosting-nonprod'
+        required: false
+        type: string
+      ContainerTag:
+        required: true
+        type: string
+      ApplicationName:
+        required: true
+        type: string
+      ArtifactName:
+        required: true
+        type: string
+        default : 'app'
+
+    secrets:
+      CONTAINER_REGISTRY_LOGIN_SERVER:
+        required: true
+      CONTAINER_REGISTRY_USERNAME:
+        required: true
+      CONTAINER_REGISTRY_PASSWORD:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_CLIENT_SECRET:
+        required: true
+        
+    outputs:
+      ContainerTag:
+        description: "The version tag for the release and the Container"
+        value: ${{ inputs.ContainerTag }}
+jobs:
+  deploy:
+    environment: ${{ inputs.Environment }}          
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+
+    steps:
+    
+      - name: 'echo ContainerTag '
+        run: echo ${{ inputs.ContainerTag }}
+        
+      - name: 'echo eventName '
+        run: echo ${{ github.event_name }}
+  
+      - name: 'Add Tmp/ApplicationName folder  before build'
+        run: mkdir -p /tmp/${{ inputs.ApplicationName }}
+
+      # Downloads container image from artifacts
+      - name: download image .tar file from Github artifacts
+        uses: actions/download-artifact@v2.0.6
+        with:
+          name: ${{ inputs.ArtifactName }}
+          path: /tmp/${{ inputs.ApplicationName }}
+          
+      - name: 'Tmp After Download'
+        run: ls -la /tmp/${{ inputs.ApplicationName }} 
+
+      # Load docker image from .tar file
+      - name: Load docker image from .tar file
+        run: docker load --input /tmp/${{ inputs.ApplicationName }}/image.tar
+        
+      # Extract tags from tar image (latest, run_number, commit sha)
+     # -  name: Extract tags
+     #    run: 
+
+      # Set the docker image tag to the environmentally specific ccontainer registry server tag
+      - name: Set docker image tag to environmentally specific version for container registry
+        run: docker tag ${{ inputs.ContainerTag }} ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER}}/${{ inputs.ContainerTag }}
+
+      # Login to Azure Container registry
+      - name: Login to Azure Container registry
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER}}
+          username: ${{secrets.CONTAINER_REGISTRY_USERNAME}}
+          password: ${{secrets.CONTAINER_REGISTRY_PASSWORD}}
+
+      # Push Docker image to Azure Container Registry
+      - name: Push Docker image to Azure Container Registry
+        run: docker push ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER}}/${{ inputs.ContainerTag }}

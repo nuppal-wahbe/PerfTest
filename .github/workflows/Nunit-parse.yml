@@ -1,0 +1,169 @@
+name: "Parse NUnit Report"
+
+on:
+  workflow_call:
+    inputs:
+      storageAccountName:
+        type: string
+        required: true
+        description: "The name of the storage account to use"
+      containerName:
+        type: string
+        required: true
+        description: "The name of the container to use"
+      applicationName:
+        type: string
+        required: true
+    secrets:
+      AZ_STORAGE_KEY_RD:
+        required: true
+    outputs:
+      results:
+        description: "The results of the NUnit Report"
+        value: ${{ jobs.parse-nunit.outputs.test_results }}
+      percent_passed:
+        description: "The percentage of tests passed"
+        value: ${{ jobs.parse-nunit.outputs.percent_passed }}
+      percent_failed:
+        description: "The percentage of tests failed"
+        value: ${{ jobs.parse-nunit.outputs.percent_failed }}
+      total_tests:
+        description: "The total number of tests"
+        value: ${{ jobs.parse-nunit.outputs.total_tests }}
+
+    
+jobs:
+  parse-nunit:
+    runs-on: ubuntu-latest
+    outputs:
+      test_results: ${{ steps.parse-nunit-report.outputs.test_results }}
+      percent_passed: ${{ steps.parse-nunit-report.outputs.percent_passed }}
+      percent_failed: ${{ steps.parse-nunit-report.outputs.percent_failed }}
+      total_tests: ${{ steps.parse-nunit-report.outputs.total_tests }}
+    steps:
+    - name: Download a Build Artifact
+      uses: actions/download-artifact@v3.0.0
+      with:
+        # Artifact name
+        name: NUnitReport       
+        
+    - name: Generate current date
+      id: date
+      run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
+
+    - name: Install BeautifulSoup via pip
+      run: | 
+        pip install beautifulsoup4
+        pip install lxml
+      
+    - name: check ls
+      run: ls -la
+
+    - name: Parse NUnit Report with beautiful soup
+      id: parse-nunit-report
+      shell: python
+      run: | 
+        #!/usr/bin/python
+        
+        from bs4 import BeautifulSoup
+        from datetime import datetime
+        import json
+        import sys
+        import xml.etree.ElementTree as ET
+        import os
+        import requests
+
+        path = '.'
+
+        # Iterate through directory till we find NUnit Report
+        for filename in os.listdir(path):
+            if not filename.endswith('.xml'): continue
+            fullname = os.path.join(path, filename)
+            infile = open(fullname,"r")
+            contents = infile.read()
+
+            # Build out XML parser
+            soup = BeautifulSoup(contents, 'xml')
+
+            # Create test result summary object
+            test_result_summary = soup.find('ResultSummary').find('Counters')
+
+            # Make an empty dictionary for test_results
+            test_results = {}
+
+            # Make an empty dictionary for totals
+            total = {}
+
+            total['total'] = int(test_result_summary['total'])
+            total['passed'] = int(test_result_summary['passed'])
+            total['failed'] = int(test_result_summary['failed'])
+            total['inconclusive'] = int(test_result_summary['inconclusive'])
+            total['executed'] = int(test_result_summary['executed'])
+            total['error'] = int(test_result_summary['error'])
+            total['inconclusive'] = int(test_result_summary['inconclusive'])
+            total['timeout'] = int(test_result_summary['timeout'])
+            total['aborted'] = int(test_result_summary['aborted'])
+            total['passedButRunAborted'] = int(test_result_summary['passedButRunAborted'])
+            total['notRunned'] = int(test_result_summary['notRunnable'])
+            total['notExecuted'] = int(test_result_summary['notExecuted'])
+            total['disconnected'] = int(test_result_summary['disconnected'])
+            total['warning'] = int(test_result_summary['warning'])
+
+            test_results['total'] = total
+            
+            unit_test_list = []
+            # Iterate through each test case
+            for test_case in soup.find_all('UnitTestResult'):
+                # Create an empty dictionary for each test case
+                test_case_result = {}
+
+                # Get test case name, duration, and outcome
+                test_case_result['name'] = test_case['testName']
+                test_case_result['duration'] = test_case['duration']
+                test_case_result['outcome'] = test_case['outcome']
+
+                # Check and see if a stack trace element exists for this test case
+                if test_case.find('StackTrace'):
+                    # Get stack trace
+                    test_case_result['stack_trace'] = test_case.find('StackTrace').text
+
+                # Append to unit_test list
+                unit_test_list.append(test_case_result)
+            
+
+            # Add unit_test_list to test_results
+            test_results['tests'] = unit_test_list
+
+            # Calculate percentage of tests passed
+            test_results['percent_passed'] = round((total['passed'] / total['total']) * 100, 2)
+
+            # Set percent_passed as a GitHub output
+            print("::set-output name=percent_passed::" + str(test_results['percent_passed']))
+
+            # Calculate percentage of tests failed
+            test_results['percent_failed'] = round((total['failed'] / total['total']) * 100, 2)
+
+            # Set percent_failed as a GitHub output
+            print("::set-output name=percent_failed::" + str(test_results['percent_failed']))
+
+            # Set total_tests as a GitHub output
+            print("::set-output name=total_tests::" + str(total['total']))
+
+            # Set test_results as a GitHub output
+            print("::set-output name=test_results::" + json.dumps(test_results))
+
+            with open('${{ inputs.applicationName }}_test_result_summary_${{ steps.date.outputs.date }}.json', 'w') as outfile:
+                json.dump(test_results, outfile)
+                    
+   
+     # Upload the results to Azure Storage Account
+    - name: Upload results .json to azure blob storage
+      run: az storage blob upload --account-name ${{ inputs.storageAccountName }} --account-key ${{ secrets.AZ_STORAGE_KEY_RD }} --container-name ${{ inputs.containerName }} --file ./${{ inputs.applicationName }}_test_result_summary_${{ steps.date.outputs.date }}.json --overwrite=true
+
+    #   # Upload the results file as an artifact for the upcoming Gating
+    # - name: Upload results .json as an artifact
+    #   uses: actions/upload-artifact@v3
+    #   with:
+    #     name: tests-results
+    #     path: ./${{ inputs.applicationName }}_test_result_summary_${{ steps.date.outputs.date }}.json
+    #     retention-days: 30

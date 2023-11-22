@@ -1,0 +1,103 @@
+name: Get Rapid7 Scan Results 
+  
+on:
+  workflow_call:
+   inputs:
+      GithubRunnerGroupName:
+        type: string
+        required: true
+        default: 'linux-hosting-nonprod'
+      applicationName:
+        type: string
+        required: true       
+   secrets:
+      AZ_STORAGE_KEY_RD:
+        required: true
+   outputs:
+      critical_count:
+        description: 'Number of critical vulnerabilities found'
+        value: ${{ jobs.GetRapid7Results.outputs.critical_count }}
+      high_count:
+        description: 'Number of high vulnerabilities found'
+        value: ${{ jobs.GetRapid7Results.outputs.high_count }}
+      medium_count:
+        description: 'Number of medium vulnerabilities found'
+        value: ${{ jobs.GetRapid7Results.outputs.medium_count }}
+      low_count:
+        description: 'Number of low vulnerabilities found'
+        value: ${{ jobs.GetRapid7Results.outputs.low_count }}
+        
+  
+jobs:
+  GetRapid7Results:
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+    outputs:
+      critical_count: ${{ steps.parse_rapid7_results.outputs.critical_count }}
+      high_count: ${{ steps.parse_rapid7_results.outputs.high_count }}
+      medium_count: ${{ steps.parse_rapid7_results.outputs.medium_count }}
+      low_count: ${{ steps.parse_rapid7_results.outputs.low_count }}
+    steps:
+      # Download from blob storage container
+      - name: Download from blob storage  
+        run: |
+         az storage blob download --account-name jamspacetest --account-key ${{ secrets.AZ_STORAGE_KEY_RD }} -c rapid7results -n ${{inputs.applicationName}}_rapid7results.json -f ./${{inputs.applicationName}}_rapid7results.json
+         ls -la
+
+      - name: Parse Rapid7 results with Python
+        id: parse_rapid7_results
+        shell: python
+        run: | 
+          import json
+          import os
+
+          with open('${{ inputs.applicationName }}_rapid7results.json') as f:
+              data = json.load(f)
+              f.close()
+
+
+          total_count_critical = 0
+          total_count_high = 0
+          total_count_medium = 0
+          total_count_low = 0
+
+          # Check and see if data is an instance of a dictionary. If so, set all outputs as 0 and exit
+          if isinstance(data, dict):
+              print("Data is a dictionary, exiting...")
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  print(f"critical_count=0", file=f)
+                  f.close()
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  print(f"high_count=0", file=f)
+                  f.close()
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  print(f"medium_count=0", file=f)
+                  f.close()
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  print(f"low_count=0", file=f)
+                  f.close()
+          else:
+              print("Data is not a dictionary, hence, we can continue and gather totals")
+              # Iterate through each items severity, and count the number of high, medium and low vulnerabilities if the severity meets the severity
+              for item in data:
+                  if item['severity'] == 'HIGH' and (item['status'] == 'UNREVIEWED' or item['status'] == 'VERIFIED'):
+                      total_count_high += 1
+                  elif item['severity'] == 'MEDIUM' and (item['status'] == 'UNREVIEWED' or item['status'] == 'VERIFIED'):
+                      total_count_medium += 1
+                  elif item['severity'] == 'LOW' and (item['status'] == 'UNREVIEWED' or item['status'] == 'VERIFIED'):
+                      total_count_low += 1
+                  elif item['severity'] == 'CRITICAL' (item['status'] == 'UNREVIEWED' or item['status'] == 'VERIFIED'):
+                      total_count_critical += 1
+
+              # Write each as an output to GitHub Actions
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  print(f"critical_count={str(total_count_critical)}", file=f)
+                  f.close()
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  print(f"high_count={str(total_count_high)}", file=f)
+                  f.close()
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  print(f"medium_count={str(total_count_medium)}", file=f)
+                  f.close()
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  print(f"low_count={str(total_count_low)}", file=f)
+                  f.close()    

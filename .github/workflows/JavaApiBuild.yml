@@ -1,0 +1,193 @@
+name: JavaAPIBuild
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      TARGET_DIR:
+        required: true
+        type: string
+      MVN_REPO_DIR:
+        required: true
+        type: string
+      ApplicationDirectory:
+        required: true
+        type: string
+      ApplicationName:
+        required: true
+        type: string
+      GithubRunnerGroupName:
+        default: 'ubuntu-latest'
+        required: false
+        type: string
+    outputs: 
+        image-with-tag: 
+          value: ${{ jobs.build-image.outputs.image-with-tag }}
+        tags:
+          value: ${{ jobs.build-image.outputs.tags }}      
+         
+    secrets:
+      CONTAINER_REGISTRY_LOGIN_SERVER:
+        required: true
+      CONTAINER_REGISTRY_USERNAME:
+        required: true
+      CONTAINER_REGISTRY_PASSWORD:
+        required: true
+      # AZURE_TENANT_ID:
+      #   required: true
+      # AZURE_CLIENT_ID:
+      #   required: true
+      # AZURE_CLIENT_SECRET:
+      #   required: true
+      
+
+# env:
+#   REGISTRY_USER: gitactions-verification-np
+#   IMAGE_REGISTRY: registry.apps.aro401.wahpf.org
+#   OCP_NAMESPACE: verification-dev
+#   OCP_IS_NAMESPACE: hpf-is-shared
+#   #APP_NAME: vlp2microservice
+#   #APP_DIR: VLP2Microservice
+#   APP_PORT: 8080
+#   APP_ROUTE_HOST: vlp2microservice-dev.apps.aro401.wahpf.org
+#   APP_TEST_PATH: VLP2Microservice/actuator/health
+#   TEAR_DOWN: false
+#   TLS_VERIFY: false
+#   NEW_DEPLOY: false
+  
+
+jobs:
+  #####################################################################################################################
+  ## The compile job compiles the application into a jar, and uploads it as an artifact for the next job to use.
+  compile:
+    name: Compile, MVN Build 
+    runs-on: [linux-hosting-nonprod]
+    outputs:
+      jarname: ${{ steps.get-jarname.outputs.jarname }}
+      commit_sha: ${{ steps.commit-data.outputs.short_sha }}
+    steps:
+    - uses: actions/checkout@v2
+        
+    # If none of these files has changed, we assume that the contents of .m2/repository can be fetched from the cache.
+    - name: Hash Maven files
+      run: |
+        echo "MVN_HASH=$(hashFiles\('${{inputs.ApplicationDirectory}}/pom.xml', '.mvn/**/*', 'mvnw*'\))" >> $GITHUB_ENV
+
+    - name: Setup Java
+      uses: actions/setup-java@v1
+      with:
+        java-version: 8
+
+    - name: Set up Maven
+      uses: stCarolas/setup-maven@v4.2
+      with:
+        maven-version: 3.8.2
+
+    - name: Check JAVA and MVN Version
+      run: |
+       echo "#####JAVA Version#####"
+       java -version
+       echo "#####MVN Version#####"
+       mvn -version
+    - run: mvn -ntp -B package --file ${{ inputs.ApplicationDirectory }}/pom.xml
+    
+    # Store the output jar into the env for reuse below.
+    # It will contain, eg. "audit-service-0.0.1-SNAPSHOT.jar"    
+    - name: Get jar filename
+      id: get-jarname
+      run: |
+        export JAR_NAME="$(basename $(ls ${{ inputs.ApplicationDirectory }}/target/*.jar))"
+        echo "${{ inputs.ApplicationDirectory }} jar is $JAR_NAME"
+        echo "::set-output name=jarname::$JAR_NAME"
+        echo "JAR_NAME=$JAR_NAME" >> $GITHUB_ENV
+    # Upload the jar for future jobs to use.
+    - uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.JAR_NAME }}
+        path: ${{ inputs.ApplicationDirectory }}/target/${{ env.JAR_NAME }}
+        #path: ${{ env.TARGET_DIR }} ${{ env.JAR_NAME }}
+        if-no-files-found: error
+    
+  #############################################################################################################
+  ## It outputs the image tag and image URL for the next step to use when deploying to the OpenShift cluster.
+  build-image:
+    name: Container Build/Scan and Push to ACR Registry
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+    needs: compile
+    outputs:
+      registry-path: ${{ steps.push-to-quay.outputs.registry-path }}
+      image-with-tag: ${{ steps.build-image.outputs.image-with-tag }}
+      tags: ${{ steps.build-image.outputs.tags }}
+    env:
+      JAR_NAME: ${{ needs.compile.outputs.jarname }}
+      IMAGE_TAGS: latest
+    steps:
+      # Download the jar artifact from the compile step
+      - uses: actions/download-artifact@v2
+        with:
+          name: ${{ env.JAR_NAME }}
+
+      - name: Set environment variables
+        run: |
+          echo "${{ env.JAR_NAME }} jar is $JAR_NAME"
+          echo "JAR_NAME=$JAR_NAME"
+          echo "GITHUB_SHA=${GITHUB_SHA}" >> $GITHUB_ENV
+          echo "GITHUB_WORKFLOW=${GITHUB_WORKFLOW}" >> $GITHUB_ENV
+          echo "GITHUB_RUN_NUMBER=${GITHUB_RUN_NUMBER}" >> $GITHUB_ENV
+          echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}" >> $GITHUB_ENV
+          echo "GITHUB_REF=${GITHUB_REF}" >> $GITHUB_ENV     
+      
+      # Use buildah to build the application image with the jar inside.
+      - name: Build Image
+        id: build-image
+        uses: redhat-actions/buildah-build@v2
+        with:
+          image: ${{ inputs.ApplicationName }}
+          tags: v${{ env.GITHUB_RUN_NUMBER }}
+          oci: true
+          base-image:  registry.access.redhat.com/ubi8/openjdk-8:1.13
+          content: ${{ env.JAR_NAME }}
+          envs: |
+            GITHUB_SHA1= ${{ env.GITHUB_SHA }}
+            GITHUB_WORKFLOW1= ${{ env.GITHUB_WORKFLOW }}
+            GITHUB_RUN_NUMBER1= ${{ env.GITHUB_RUN_NUMBER }}
+            GITHUB_REPOSITORY1= ${{ env.GITHUB_REPOSITORY }}
+            GITHUB_REF1= ${{ env.GITHUB_REF }}
+            JAVA_TOOL_OPTIONS='-Xmx768m'
+          entrypoint: |
+            java
+            -jar
+            ${{ env.JAR_NAME }}
+          port: ${{ env.CONTAINER_PORT }}
+          
+      - name: Echo Outputs
+        id: echo_outputs
+        run: |
+          echo "Image: ${{ steps.build-image.outputs.image }}"
+          echo "Tags: ${{ steps.build-image.outputs.tags }}"
+          echo "Tagged Image: ${{ steps.build-image.outputs.image-with-tag }}"
+          
+      # Push the built image to ACR so it can be pulled into the OpenShift cluster.    
+      # Login to Azure Source Container registry     
+      - name: Login to Azure Container registry
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER}}
+          username: ${{secrets.CONTAINER_REGISTRY_USERNAME}}
+          password: ${{secrets.CONTAINER_REGISTRY_PASSWORD}}
+             
+      # list buildah images
+      - name: buildah images
+        run: buildah images
+       
+      # Set the docker image tag to the environmentally specific container registry server tag
+      - name: Set image tag to environmentally specific version for container registry
+        run: buildah tag ${{ steps.build-image.outputs.image-with-tag }}  ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER}}/${{ steps.build-image.outputs.image-with-tag }}
+  
+      - name: Push the image to the ACR
+        run: buildah push ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER}}/${{ steps.build-image.outputs.image-with-tag }}
+
+      #####################################################################################################################
+    
+    
+    

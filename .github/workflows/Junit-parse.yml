@@ -1,0 +1,210 @@
+name: "Parse JUnit Report"
+
+on:
+  workflow_call:
+    inputs:
+      storageAccountName:
+        type: string
+        required: true
+        description: "The name of the storage account to use"
+      containerName:
+        type: string
+        required: true
+        description: "The name of the container to use"
+      applicationName:
+        type: string
+        required: true
+        description: "The name of the application that the tests ran against"
+    secrets:
+      AZ_STORAGE_KEY_RD:
+        required: true
+    outputs:
+      results:
+        description: "The parsed results of the JUnit report"
+        value: ${{ jobs.parse-junit.outputs.parsedResults }}
+      percent_passed:
+        description: "The percentage of tests that passed"
+        value: ${{ jobs.parse-junit.outputs.percent_passed }}
+      percent_failed:
+        description: "The percentage of tests that failed"
+        value: ${{ jobs.parse-junit.outputs.percent_failed }}
+      total_tests:
+        description: "The total number of tests"
+        value: ${{ jobs.parse-junit.outputs.total_tests }}
+    
+jobs:
+  parse-junit:
+    runs-on: ubuntu-latest
+    outputs:
+      parsedResults: ${{ steps.parse-results.outputs.parsedResults }}
+      percent_passed: ${{ steps.parse-results.outputs.percent_passed }}
+      percent_failed: ${{ steps.parse-results.outputs.percent_failed }}
+      total_tests: ${{ steps.parse-results.outputs.total_tests }}
+    steps:
+    - name: Download a Build Artifact
+      uses: actions/download-artifact@v3.0.0
+      with:
+        # Artifact name
+        name: JUnitReport
+
+    - name: Install BeautifulSoup via pip
+      run: | 
+        pip install beautifulsoup4
+        pip install lxml
+      
+    - name: List working directory
+      run: ls -la
+      
+    - name: Generate Timestamp
+      if: always()
+      id: date
+      run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
+
+    # Runs a script on runner to generate report assuming running on Python3... please ensure that Python3 is default on runner :) 
+    - name: Call Script
+      if: always()
+      id: parse-results
+      shell: python
+      run: |
+        #!/usr/bin/env python
+        
+        from bs4 import BeautifulSoup
+        from datetime import datetime
+        import json
+        import sys
+        import xml.etree.ElementTree as ET
+        import os
+        import requests
+        class Object:
+            def toJSON(self):
+                return json.dumps(self, default=lambda o: o.__dict__, 
+                    sort_keys=True, indent=4)
+        path = '.'
+        for filename in os.listdir(path):
+            if not "testng-results.xml" in filename: continue
+            fullname = os.path.join(path, filename)
+            infile = open(fullname,"r")
+            contents = infile.read()
+            soup = BeautifulSoup(contents,'xml')
+            testResults = soup.find_all('testng-results')
+            for results in testResults:
+                total = Object()
+                total.ignored=results['ignored']
+                total.total=results['total']
+                total.passed=results['passed']
+                total.failed=results['failed']
+                total.skipped=results['skipped']
+                suite = results.find('suite')
+                
+                total.suite = Object()
+                total.suite.name = suite['name']
+                total.suite.durationms = suite['duration-ms']
+                
+                total.suite.tests = []
+                tests = suite.find_all('test')
+                
+                for test in tests:
+                    t = Object()
+                    t.name = test['name']
+                    classes = test.find_all('class')
+                    t.classes = []
+                    for cl in classes:
+                        c = Object()
+                        c.name = cl['name']
+                        c.steps = []
+                        
+                        steps = test.find_all('test-method')
+                        
+                        for step in steps:
+                            s = Object()
+                            s.isconfig = "false"
+                            s.errorMessage = ""
+                            s.stackTrace = ""
+                            if (step.has_attr('is-config')):
+                                s.isconfig = step['is-config']
+                            if step.find('exception'):
+                                e = step.find('exception')
+                                s.errorMessage = e.find('message').text
+                                s.stackTrace = e.find('full-stacktrace').text
+                            s.signature = step['signature']
+                            s.name = step['name']
+                            s.durationms = step['duration-ms']
+                            s.status = step['status']
+                            
+                            c.steps.append(s)
+                            
+                        t.classes.append(c)
+                            
+                    total.suite.tests.append(t)
+
+                # calculate pass percentage
+                total.total = int(total.total) - int(total.ignored)
+                percent_passed = round((int(total.passed) / int(total.total)) * 100, 2)
+                with open(os.environ["GITHUB_OUTPUT"], "a") as myfile:
+                  print(f"percent_passed={percent_passed}", file=myfile)
+                  myfile.close()
+
+                # calculate fail percentage
+                percent_failed = round((int(total.failed) / int(total.total)) * 100, 2)
+                with open(os.environ["GITHUB_OUTPUT"], "a") as myfile:
+                  print(f"percent_failed={percent_failed}", file=myfile)
+                  myfile.close()
+
+                # set total number of tests as a github output
+                with open(os.environ["GITHUB_OUTPUT"], "a") as myfile:
+                  print(f"total_tests={total.total}", file=myfile)
+                  myfile.close()
+                    
+                # Make test_results dictionary
+                test_results = {}
+                test_results['total'] = total.total 
+                test_results['percent_passed'] = percent_passed
+                test_results['percent_failed'] = percent_failed
+
+                test_results_string = json.dumps(test_results)
+
+                with open(os.environ["GITHUB_OUTPUT"], "a") as myfile:
+                  print(f"parsedResults={test_results_string}", file=myfile)
+                  myfile.close()
+                
+                # make results into json string
+                json_string = total.toJSON()
+                with open('${{ inputs.applicationName }}_JUnitResults_${{ steps.date.outputs.date }}.json', 'w') as outfile:
+                  outfile.write(json_string)
+                                  
+                # issueBody = ""
+                
+                # issueBody = issueBody + "Results Total: " + total.total + "  :1234: \n"
+                # issueBody = issueBody + "Results Ignored: " + total.ignored + "  :zzz: \n"
+                # issueBody = issueBody + "Results Passed: " + total.passed + "  :white_check_mark: \n"
+                # issueBody = issueBody + "Results Failed: " + total.failed + "  :red_square: \n"
+                # issueBody = issueBody + "Results Skipped: " + total.skipped + "  :arrow_forward: \n"
+                
+                # # making a markdown table
+                # markdownTable = """
+                # | Test Result               | Passed | Failed   | Skipped |
+                # | ------------------------- | ------ | -------- | ------- |
+                # | :white_check_mark: Passed | **{0}** | **{1}** | **{2}** |
+                # | :x: Failed                | **{0}** | **{1}** | **{2}** |
+                # | :fast_forward: Skipped    | **{0}** | **{1}** | **{2}** |
+                # """.format(total.passed, total.failed, total.skipped)
+                
+                # with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as myfile:
+                #   myfile.write("## Test Results \n" + markdownTable)
+                #   myfile.close()
+                
+                # title = total.suite.name + " " + str(datetime.now()) + " Test Reports"
+                # try:
+                #     response = requests.post(url="https://api.github.com/repos/${{ github.repository }}/issues",
+                #         headers={"Accept": "application/vnd.github.v3+json",
+                #             "Authorization": "Bearer " + ${{ secrets.GITHUB_TOKEN }} },
+                #         json={"title": title, "body": issueBody})
+                # except Exception as e:
+                #     print(e)
+                # # Dump JSON object into stdout    
+                # print(response)
+
+                    
+
+    - name: Upload test_result_summary.json to azure blob storage
+      run: az storage blob upload --account-name ${{ inputs.storageAccountName }} --account-key ${{ secrets.AZ_STORAGE_KEY_RD }} --container-name ${{ inputs.containerName }} --file ./${{ inputs.applicationName }}_JUnitResults_${{ steps.date.outputs.date }}.json --overwrite=true

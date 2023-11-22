@@ -1,0 +1,123 @@
+name: ACR_Source_to_Target_Java
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      Target_Envrn: 
+        required: true
+        type: string
+      GithubRunnerGroupName:
+        default: 'linux-hosting-nonprod'
+        required: false
+        type: string
+      ContainerTag:
+        required: true
+        type: string
+      AroProjectName:
+        required: true
+        type: string
+      ApplicationName:
+        required: true
+        type: string
+      AppRouteHost:
+        required: true
+        type: string   
+      RouteTimeoutInSeconds:
+        required: false
+        default: ""
+        type: string
+      IsNewApp:
+        required: false
+        default: false
+        type: boolean
+    
+    secrets:
+      CONTAINER_REGISTRY_LOGIN_SERVER_SOURCE:
+        required: true
+      CONTAINER_REGISTRY_USERNAME_SOURCE:
+        required: true
+      CONTAINER_REGISTRY_PASSWORD_SOURCE:
+        required: true
+      OPENSHIFT_SERVER_URL_TARGET:
+        required: true
+      OPENSHIFT_TOKEN_TARGET:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_CLIENT_SECRET:
+        required: true  
+
+jobs:
+  deploy:
+    environment: ${{ inputs.Target_Envrn }}
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+
+    steps:
+
+    # Login to Azure Container registry     
+    - name: Login to Azure Container registry
+      uses: azure/docker-login@v1
+      with:
+        login-server: ${{secrets.CONTAINER_REGISTRY_LOGIN_SERVER_SOURCE}}
+        username: ${{secrets.CONTAINER_REGISTRY_USERNAME_SOURCE}}
+        password: ${{secrets.CONTAINER_REGISTRY_PASSWORD_SOURCE}}
+
+    # Login to OpenShift
+    - name: Login to OpenShift
+      uses: redhat-actions/oc-login@v1
+      with:
+        openshift_server_url: ${{ secrets.OPENSHIFT_SERVER_URL_TARGET }}
+        openshift_token: ${{ secrets.OPENSHIFT_TOKEN_TARGET }}
+        insecure_skip_tls_verify: true
+        namespace: ${{ inputs.AroProjectName }}
+
+    # Create Azure Container Registry secret
+    - name: Create Azure Container Registry secret
+      run: >
+        oc create secret docker-registry
+        --docker-server=${{ secrets.CONTAINER_REGISTRY_LOGIN_SERVER_SOURCE }}
+        --docker-username=${{ secrets.CONTAINER_REGISTRY_USERNAME_SOURCE }}
+        --docker-password=${{ secrets.CONTAINER_REGISTRY_PASSWORD_SOURCE }}
+        --docker-email=unused
+        acr-secret --dry-run=client --save-config -o yaml > acr-secret.yaml
+
+    # Add Azure Container Registry secret
+    - name: Add Azure Container Registry secret
+      run: >
+        oc apply -f acr-secret.yaml
+
+    # Create service principal secret
+    - name: Create service principal secret
+      run: >
+        oc create secret generic
+        --from-literal=AZURE_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}
+        --from-literal=AZURE_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}
+        --from-literal=AZURE_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}
+        service-principal --dry-run=client --save-config -o yaml > service-principal.yaml
+
+    # Add service principal secret
+    - name: Add Service Principal Secret
+      run: >
+        oc apply -f service-principal.yaml
+
+    # Redploy App - Run import image command in case of redeployment.
+    - name: Run Import-Image Command (Redeploy APP)
+      run:
+        oc import-image ${{ inputs.ContainerTag }} --from=${{ secrets.CONTAINER_REGISTRY_LOGIN_SERVER_SOURCE }}/${{ inputs.ContainerTag }} --confirm
+
+    # Set image tag to latest
+    - name: Label Deployment with GITHUB_SHA and Tag Image Stream to Latest
+      if: always() 
+      run: |
+        echo "GITHUB_SHA: ${GITHUB_SHA}"
+        echo "GITHUB_RUN_NUMBER: ${GITHUB_RUN_NUMBER}"
+        oc tag ${{ inputs.ContainerTag }} ${{ inputs.ApplicationName }}:latest --namespace=${{ inputs.AroProjectName }}
+        #oc tag ${{ inputs.ApplicationName }}:v${GITHUB_RUN_NUMBER} ${{ inputs.ApplicationName }}:latest --namespace=${{inputs.AroProjectName}}
+ 
+
+
+    
+    

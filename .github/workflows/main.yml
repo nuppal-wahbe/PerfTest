@@ -1,6 +1,9 @@
 on: 
   workflow_dispatch:
+<<<<<<< HEAD
 
+=======
+>>>>>>> b20163ab73d277e161c9ff4022467bbba7f00c51
 jobs:
   jmeter_job:
     runs-on: ubuntu-latest

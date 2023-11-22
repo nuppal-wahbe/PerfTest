@@ -1,0 +1,86 @@
+name: Generate CodeQL Scanning Blob to Azure
+
+on:
+  workflow_call:
+  
+   inputs:
+      GithubRunnerGroupName:
+        type: string
+        required: true
+        default: 'ubuntu-latest'
+      repoName:
+        type: string
+        required: true
+      applicationName:
+        type: string
+        required: true
+        
+   secrets:
+      AZ_STORAGE_KEY_RD:
+        required: true
+      repoToken:
+        required: true
+
+jobs:
+  generateSecurityScanBlob:
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+    steps:
+      - name: Install requests module
+        run: pip install requests
+        
+      - name: Generate JSON of Code Scanning Alerts
+        shell: python
+        run: |
+          import argparse
+          import json
+          import sys
+          import requests
+          def get_code_scanning_alerts_json():
+              # Handle pagination
+              page = 1
+              # Build Issues list
+              code_scan_alerts = []
+              while True:
+                  # Build Github.com API
+                  url = f"https://api.github.com/repos/${{ inputs.repoName }}/code-scanning/alerts?page={page}"
+                  headers = {"Authorization": "token ${{ secrets.repoToken }}"}
+                  # Get issues
+                  response = requests.get(url, headers=headers)
+                  if response.status_code != 200:
+                      print(f"Error: {response.text}")
+                      sys.exit(1)
+                  # Get issues
+                  code_scanning_alerts = json.loads(response.text)
+                  if len(code_scanning_alerts) == 0:
+                      break
+                  code_scan_alerts.extend(code_scanning_alerts)
+                  page += 1
+              # Write code scan alerts list to json file
+              with open("code_scanning_alerts.json", "w") as f:
+                  json.dump(code_scan_alerts, f)
+              return code_scan_alerts
+          # Create code scanning alerts json file
+          code_scan_alerts = get_code_scanning_alerts_json()
+          # End program
+          sys.exit(0)
+
+      - name: Upload a Build Artifact
+        #if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v3.1.0
+        with:
+        # Artifact name      
+        # A file, directory or wildcard pattern that describes what to upload
+         path: ./code_scanning_alerts.json
+     
+      
+      - name: Generate Timestamp
+        #if: github.event_name  == 'workflow_dispatch'
+        id: date
+        run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
+    
+    # upload to blob storage to container
+      - name: upload blob storage
+        #if: github.event_name == 'workflow_dispatch'
+        run: |
+         mv  ./code_scanning_alerts.json   ./${{ inputs.applicationName }}_CodeQL_${{ steps.date.outputs.date }}.json
+         az storage blob upload --account-name jamspacetest --account-key ${{ secrets.AZ_STORAGE_KEY_RD }} --container-name codeqlcontainer --file ./${{ inputs.applicationName }}_CodeQL_${{ steps.date.outputs.date }}.json 

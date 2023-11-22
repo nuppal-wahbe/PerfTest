@@ -1,0 +1,77 @@
+name: DotNet Automated Testing
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      repoName:
+        type: string
+        required: true
+        description: The name of the repository to run dotnet tests against
+      suiteName:
+        type: string
+        required: true
+        description: The name of the test suite to run
+      outputDir:
+        type: string
+        required: true
+        description: The directory to output the test results to
+      uiTest:
+        type: boolean
+        required: false
+        description: Whether or not to run UI tests
+      GithubRunnerGroupName:
+        type: string
+        default: 'linux-hosting-nonprod'
+        required: false
+      environment:
+        type: string
+        default: 'test'
+        required: false
+        
+      
+    secrets:
+      repoToken:
+        required: true
+      
+      
+jobs:
+  runAutomatedTests:
+    name: Run Automated Tests
+    runs-on: ${{ inputs.GithubRunnerGroupName }}
+
+    steps:
+    - name: Download Automation
+      uses: actions/checkout@v2
+      with:
+        repository: ${{ inputs.repoName }}
+        token: ${{ secrets.repoToken }}
+        
+    - name: Setup NuGet.exe for use with actions
+      uses: nuget/setup-nuget@v1
+      with:
+       nuget-version: 'latest'
+    
+    - name: Restore NuGet Packages
+      run: nuget restore ${{ inputs.suiteName }}.sln
+    
+    - name: Add msbuild to PATH
+      uses: microsoft/setup-msbuild@v1.0.2
+      
+    - name: Build AutomatedTest
+      run: |	             
+        msbuild.exe -graphBuild:True ${{ inputs.suiteName }}/${{ inputs.suiteName }}.csproj /p:Configuration=Release /p:DeployOnBuild=True /p:DeleteExistingFiles=True /p:OutDir="${{ inputs.outputDir }}" 
+   
+    - name: Setup Chrome Driver
+      if: ${{ inputs.uiTest }} == true
+      uses: nanasess/setup-chromedriver@master
+         
+    - name: Run AutomatedTest
+      run: |
+        dotnet test ${{ inputs.outputDir }}\${{ inputs.suiteName }}.dll "-l:trx;LogFileName=${{ inputs.outputDir }}\TestResults\TestOutput.xml"
+  
+    - name: Upload a Build Artifact
+      uses: actions/upload-artifact@v3.1.0
+      with:    
+        name: NUnitReport    
+        path: ${{ inputs.outputDir }}\TestResults\TestOutput.xml

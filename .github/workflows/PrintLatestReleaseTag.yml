@@ -1,0 +1,62 @@
+name: Grab release tag as an output
+
+on:
+  workflow_call:
+     inputs:
+      repoName:
+        type: string
+        required: true
+        description: The name of the repository to run dotnet tests against
+     outputs: 
+        releaseTag: 
+           value: ${{ jobs.getReleaseTag.outputs.releaseTag }}
+           
+   
+jobs:
+  getReleaseTag:
+    runs-on: ubuntu-latest
+    outputs:
+       releaseTag: ${{ steps.get_tag.outputs.tagName }}
+       
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2.5.0       
+               
+      - name: Echo output
+        run: echo ${{ steps.get_tag.outputs.tagName }} 
+     
+      - name: using api fetch tags
+        run: |        
+              taglist=$(gh api https://api.github.com/repos/${{ inputs.repoName }}/refs/tags | jq '.name')
+              echo "tagNewNamelist=$taglist"               
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+          
+  
+      - name: Get release tag via GH CLI
+        id: get_tag
+        run: |
+          git rev-list --tags --max-count=1
+          tag=$(gh api https://api.github.com/repos/${{ inputs.repoName }}/releases/latest | jq -r  .tag_name)
+          echo "tagName=$tag" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+          
+      - name: echo tags list   
+        run: | 
+              git rev-list --tags --max-count=1
+              #git remote set-url origin https://github.com/WAHBEcorp/IAC_Modules.git
+              ##VERSION_TAG=`git fetch --tags`
+              git fetch origin  'refs/tags/*:refs/tags/*'
+              #git pull --tags             
+              #echo "versiontag=$VERSION_TAG"          
+              #git rev-list --tags --max-count=1
+              #git describe --abbrev=0 --tags
+              
+        #&& echo "##vso[task.setvariable variable=VERSION_TAG]$VERSION_TAG"        
+      
+     
+         
+         
+                
+        
